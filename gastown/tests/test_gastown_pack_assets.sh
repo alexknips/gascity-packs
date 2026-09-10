@@ -311,9 +311,10 @@ test_witness_wisp_queries_pin_include_infra() {
     # --include-infra is passed: a wisp-reconcile query without it returns []
     # even when a wisp is assigned, and the witness pours a duplicate. That
     # regressed once already, so pin the flag rather than trust the comments.
-    # Deliberately witness-scoped: the refinery and deacon patrol queries
-    # still carry the bare form and are tracked separately in #252, so a
-    # pack-wide assertion would fail here instead of guarding this contract.
+    # Witness-scoped on purpose even now that the refinery and deacon sites
+    # are fixed (#252) and test_pack_wisp_queries_pin_include_infra sweeps the
+    # whole pack: the sweep owns the flag, this guard owns the count floor, so
+    # a witness query site deleted outright still fails here.
     total=$(grep -h -- '--type=molecule' "$prompt" "$formula" |
         grep -c -F 'gc bd list' || true)
     flagged=$(grep -h -- '--type=molecule' "$prompt" "$formula" |
@@ -445,10 +446,10 @@ test_boot_wisp_queries_pin_include_infra() {
     # every one of its queries returns [] regardless of status, so the surplus
     # burn never runs and each cycle pours a fresh wisp while its predecessor
     # leaks. Boot shipped with the bare form on all three sites one commit
-    # after the witness fix, so scope this per-agent rather than widening the
-    # witness test: a pack-wide assertion is red either way (measured 10/21 at
-    # this commit) because the deacon and refinery sites are still bare and
-    # tracked separately in #252.
+    # after the witness fix, so keep the per-agent floor here even though
+    # test_pack_wisp_queries_pin_include_infra now asserts the flag pack-wide:
+    # the sweep cannot tell a deleted query site from an asset that never had
+    # one, and this floor can.
     total=$(grep -h -- '--type=molecule' "$prompt" "$formula" |
         grep -c -F 'gc bd list' || true)
     flagged=$(grep -h -- '--type=molecule' "$prompt" "$formula" |
@@ -541,6 +542,93 @@ test_boot_deacon_observation_query_sees_wisps_tier() {
     done
 }
 
+test_refinery_wisp_queries_pin_include_infra() {
+    local prompt formula total flagged
+    prompt="$GASTOWN/agents/refinery/prompt.template.md"
+    formula="$GASTOWN/formulas/mol-refinery-patrol.toml"
+
+    # Same wisps-tier contract as the witness and boot guards, scoped to the
+    # refinery — the one site where this leak was measured rather than
+    # reasoned about. The hivemind refinery held three patrol wisps (one live,
+    # two stranded 17m and 43m) while its own pane reported a clean rotation:
+    # every CURRENT_WISP fallback here returned [] and the pour ran anyway, so
+    # each cycle added a wisp. gc never exports GC_BEAD_ID for a named session,
+    # so that fallback is the load-bearing leg on all of these sites, not a
+    # backstop, and stripping the flag silently disarms the burn.
+    total=$(grep -h -- '--type=molecule' "$prompt" "$formula" |
+        grep -c -F 'gc bd list' || true)
+    flagged=$(grep -h -- '--type=molecule' "$prompt" "$formula" |
+        grep -F 'gc bd list' | grep -c -- '--include-infra' || true)
+
+    # -ge for the same reason as the guards above: the flagged/total assertion
+    # owns the contract, so the count is a floor that catches a deleted query
+    # site rather than a cardinality pin a legitimate new site would break.
+    # 9 at this commit — 2 prompt, 6 formula burn sites, plus the patrol-summary
+    # prose pointer that reads closed predecessor wisps and needs the flag for
+    # the same reason.
+    [[ "$total" -ge 8 ]] ||
+        fail "expected at least 8 refinery --type=molecule wisp queries (9 at this commit: 2 prompt + 7 formula), found $total"
+    [[ "$flagged" -eq "$total" ]] ||
+        fail "refinery --type=molecule wisp queries must pass --include-infra ($flagged/$total do)"
+}
+
+test_deacon_wisp_queries_pin_include_infra() {
+    local prompt formula total flagged
+    prompt="$GASTOWN/agents/deacon/prompt.template.md"
+    formula="$GASTOWN/formulas/mol-deacon-patrol.toml"
+
+    # The deacon prompt carries the shape that bites hardest. Its no-idle
+    # fallback asks whether a successor wisp is already queued (ASSIGNED_WISP,
+    # --status=open) and pours one when the answer comes back empty. Without
+    # --include-infra that answer is *always* empty, so the fallback pours a
+    # duplicate on top of the successor next-iteration already assigned — the
+    # same active leak path the witness startup snippet had, on a singleton
+    # agent where nothing else reconciles the surplus away.
+    total=$(grep -h -- '--type=molecule' "$prompt" "$formula" |
+        grep -c -F 'gc bd list' || true)
+    flagged=$(grep -h -- '--type=molecule' "$prompt" "$formula" |
+        grep -F 'gc bd list' | grep -c -- '--include-infra' || true)
+
+    [[ "$total" -ge 3 ]] ||
+        fail "expected at least 3 deacon --type=molecule wisp queries (3 at this commit: 2 prompt + 1 formula), found $total"
+    [[ "$flagged" -eq "$total" ]] ||
+        fail "deacon --type=molecule wisp queries must pass --include-infra ($flagged/$total do)"
+}
+
+test_pack_wisp_queries_pin_include_infra() {
+    local assets total unflagged
+
+    # The generalization of the four per-agent guards, and the reason this bug
+    # survived as long as it did: witness was fixed, boot was fixed one commit
+    # later, and the refinery and deacon sites stayed bare for weeks because
+    # every guard was scoped to the asset pair whose bug had just been found.
+    # This sweep covers every prompt and formula in the pack, including assets
+    # that do not exist yet, so a new patrol role cannot ship the bare form.
+    # The per-agent guards stay: they own the count floors, which this cannot.
+    mapfile -t assets < <(
+        find "$GASTOWN/agents" -name 'prompt.template.md' -print
+        find "$GASTOWN/formulas" -name '*.toml' -print
+    )
+    [[ "${#assets[@]}" -gt 0 ]] ||
+        fail "found no gastown prompt/formula assets to sweep for wisp queries"
+
+    # || true on both pipelines is load-bearing under set -euo pipefail: a
+    # no-match grep exits 1, and on the unflagged pipeline no-match is the
+    # passing case, so an unguarded run would kill the suite on success.
+    total=$(grep -h -- '--type=molecule' "${assets[@]}" |
+        grep -c -F 'gc bd list' || true)
+    unflagged=$(grep -h -- '--type=molecule' "${assets[@]}" |
+        grep -F 'gc bd list' | grep -v -- '--include-infra' || true)
+
+    # Floor guards the sweep itself: a broken find or a renamed asset layout
+    # would otherwise report a clean pack by scanning nothing.
+    [[ "$total" -ge 20 ]] ||
+        fail "expected at least 20 pack-wide --type=molecule wisp queries (22 at this commit), found $total"
+    [[ -z "$unflagged" ]] ||
+        fail "every gc bd list --type=molecule wisp query must pass --include-infra; bare sites:
+$unflagged"
+}
+
 test_refinery_direct_merge_is_worktree_safe_and_fail_closed() {
     local formula direct_block
     formula="$GASTOWN/formulas/mol-refinery-patrol.toml"
@@ -629,6 +717,9 @@ test_witness_handoff_recovery_is_guarded_and_fail_closed
 test_boot_wisp_queries_pin_include_infra
 test_boot_patrol_burn_resolves_current_wisp
 test_boot_deacon_observation_query_sees_wisps_tier
+test_refinery_wisp_queries_pin_include_infra
+test_deacon_wisp_queries_pin_include_infra
+test_pack_wisp_queries_pin_include_infra
 test_refinery_direct_merge_is_worktree_safe_and_fail_closed
 
 echo "gastown pack asset tests passed"

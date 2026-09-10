@@ -67,9 +67,13 @@ external observers (witness, mayor) only catch on a slow patrol cycle.
 ### 1. ALWAYS pour the next wisp before burning the current one
 
 ```bash
+# Wisp roots are ephemeral, so gc bd list hides the wisps tier unless
+# --include-infra is passed. Drop the flag and this fallback resolves empty:
+# the current wisp is never burned while the next one is poured, and you
+# strand a patrol wisp on every cycle that reaches here without GC_BEAD_ID.
 CURRENT_WISP=${GC_BEAD_ID:-}
 if [ -z "$CURRENT_WISP" ]; then
-  CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --limit=1 --json | jq -r '.[0].id // empty')
+  CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --include-infra --limit=1 --json | jq -r '.[0].id // empty')
 fi
 NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{ .DefaultBranch }} --var rig_name={{ .RigName }} --var binding_prefix={{ .BindingPrefix }} --json | jq -r '.new_epic_id // empty')
 if [ -z "$NEXT" ]; then
@@ -112,9 +116,10 @@ shortcuts or summarizing prematurely. If context feels heavy, then **pour and
 assign the next wisp, burn the current wisp, THEN request restart**:
 
 ```bash
+# --include-infra: wisp roots live in the tier gc bd list hides without it.
 CURRENT_WISP=${GC_BEAD_ID:-}
 if [ -z "$CURRENT_WISP" ]; then
-  CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --limit=1 --json | jq -r '.[0].id // empty')
+  CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --include-infra --limit=1 --json | jq -r '.[0].id // empty')
 fi
 NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{ .DefaultBranch }} --var rig_name={{ .RigName }} --var binding_prefix={{ .BindingPrefix }} --json | jq -r '.new_epic_id // empty')
 if [ -z "$NEXT" ]; then

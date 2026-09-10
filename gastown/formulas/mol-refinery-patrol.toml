@@ -117,9 +117,14 @@ If context feels heavy (multi-hour session, large recent diffs, or you notice
 yourself taking shortcuts or summarizing prematurely), pour and assign the next
 wisp, burn the current wisp, then request a restart:
 ```bash
+# Wisp roots are ephemeral, so gc bd list hides the wisps tier unless
+# --include-infra is passed. Drop the flag and this fallback resolves empty:
+# the current wisp is never burned while the next one is poured, and the
+# refinery accumulates a stranded patrol wisp on every cycle that reaches
+# here without GC_BEAD_ID set.
 CURRENT_WISP=${GC_BEAD_ID:-}
 if [ -z "$CURRENT_WISP" ]; then
-  CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --limit=1 --json | jq -r '.[0].id // empty')
+  CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --include-infra --limit=1 --json | jq -r '.[0].id // empty')
 fi
 NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
 if [ -z "$NEXT" ]; then
@@ -266,9 +271,10 @@ Branch: $BRANCH
 Target: $TARGET"
   # Pour the next patrol iteration before burning this one: a halt on one
   # bead must not end the merge lane.
+  # --include-infra: wisp roots live in the tier gc bd list hides without it.
   CURRENT_WISP=${GC_BEAD_ID:-}
   if [ -z "$CURRENT_WISP" ]; then
-    CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --limit=1 --json | jq -r '.[0].id // empty')
+    CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --include-infra --limit=1 --json | jq -r '.[0].id // empty')
   fi
   NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
   if [ -z "$NEXT" ]; then
@@ -321,9 +327,10 @@ Step 3a hand this already-rejected tip straight back here on the next crash.
 5. Clean up temp branch: `git checkout {{target_branch}} && git branch -D temp`
 6. Pour next patrol iteration before burning:
 ```bash
+# --include-infra: wisp roots live in the tier gc bd list hides without it.
 CURRENT_WISP=${GC_BEAD_ID:-}
 if [ -z "$CURRENT_WISP" ]; then
-  CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --limit=1 --json | jq -r '.[0].id // empty')
+  CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --include-infra --limit=1 --json | jq -r '.[0].id // empty')
 fi
 NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
 if [ -z "$NEXT" ]; then
@@ -426,9 +433,10 @@ TARGET=$(gc bd show $WORK --json | jq -r '.[0].metadata.target // "{{target_bran
    - Clean up: `git checkout "$TARGET" && git branch -D temp`
    - Pour next patrol iteration before burning:
      ```bash
+     # --include-infra: wisp roots live in the tier gc bd list hides without it.
      CURRENT_WISP=${GC_BEAD_ID:-}
      if [ -z "$CURRENT_WISP" ]; then
-       CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --limit=1 --json | jq -r '.[0].id // empty')
+       CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --include-infra --limit=1 --json | jq -r '.[0].id // empty')
      fi
      NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
      if [ -z "$NEXT" ]; then
@@ -518,9 +526,10 @@ Work bead: $WORK
 Existing PR: $EXISTING_PR
 Branch: $BRANCH
 Target: $TARGET"
+  # --include-infra: wisp roots live in the tier gc bd list hides without it.
   CURRENT_WISP=${GC_BEAD_ID:-}
   if [ -z "$CURRENT_WISP" ]; then
-    CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --limit=1 --json | jq -r '.[0].id // empty')
+    CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --include-infra --limit=1 --json | jq -r '.[0].id // empty')
   fi
   if [ -z "$CURRENT_WISP" ]; then
     echo "Could not resolve current wisp; not burning."
@@ -1191,8 +1200,9 @@ If the cycle ended early (conflict rejection, no work found), note
 why and what state was left.
 
 This summary is not stored separately — it lives in the wisp's
-closing reason. The next session can find it via `gc bd list --type=molecule
---status=closed --limit=5` if it needs predecessor context."""
+closing reason. The next session can find it via
+`gc bd list --type=molecule --include-infra --status=closed --limit=5`
+if it needs predecessor context."""
 
 [[steps]]
 id = "next-iteration"
@@ -1226,9 +1236,10 @@ If auto_land = "false": skip this entirely.
 
 **2. Resolve the current wisp, pour next iteration, then burn this wisp:**
 ```bash
+# --include-infra: wisp roots live in the tier gc bd list hides without it.
 CURRENT_WISP=${GC_BEAD_ID:-}
 if [ -z "$CURRENT_WISP" ]; then
-  CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --limit=1 --json | jq -r '.[0].id // empty')
+  CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --include-infra --limit=1 --json | jq -r '.[0].id // empty')
 fi
 NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
 if [ -z "$NEXT" ]; then
