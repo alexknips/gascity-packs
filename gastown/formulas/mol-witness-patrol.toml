@@ -209,9 +209,11 @@ a NEW session with a different ID — the old one never comes back.
    (`argument list too long: jq`). Build the map once:
    ```bash
    SESSIONS_FILE=$(mktemp); SESSION_BEADS_FILE=$(mktemp)
-   gc session list --state=all --json > "$SESSIONS_FILE"
+   SESSION_LIST_RC=0
+   gc session list --state=all --json > "$SESSIONS_FILE" || SESSION_LIST_RC=$?
    gc bd --city "${GC_CITY:-${GC_CITY_PATH:?GC_CITY/GC_CITY_PATH unset — cannot locate HQ store}}" list --type=session --label=gc:session --include-infra --include-gates --all --json --limit=0 > "$SESSION_BEADS_FILE"
 
+   MAP_BUILD_RC=0
    LIVENESS_MAP=$(jq -n --slurpfile sessions "$SESSIONS_FILE" --slurpfile session_beads "$SESSION_BEADS_FILE" '
      def add($m; $key; $state; $closed):
        if (($key // "") | length) == 0 then $m
@@ -224,16 +226,37 @@ a NEW session with a different ID — the old one never comes back.
        | add(.; $s.alias;      $s.state; ($s.closed // false))
        | add(.; $s.agent_name; $s.state; ($s.closed // false))
      )) as $from_sessions
-     | reduce ($session_beads[0] // [] | sort_by(.updated_at) | reverse)[] as $b ($from_sessions;
+     | reduce ((if (($session_beads[0]) | type) == "array" then $session_beads[0] else [] end)
+               | sort_by(.updated_at) | reverse)[] as $b ($from_sessions;
          (($b.metadata.configured_named_identity) // "") as $k
          | if ($k | length) == 0 or has($k) then .
            else . + {($k): (if $b.status == "closed" then "closed" else (($b.metadata.state) // "") end)}
-           end)')
+           end)') || MAP_BUILD_RC=$?
 
-   SESSION_COUNT=$(jq -r '(.sessions // []) | length' "$SESSIONS_FILE")
-   SESSION_BEAD_COUNT=$(jq -r 'if type == "array" then length else 0 end' "$SESSION_BEADS_FILE")
-   MAP_COUNT=$(printf '%s' "$LIVENESS_MAP" | jq -r 'length')
+   SESSION_COUNT=$(jq -r '(.sessions // []) | length' "$SESSIONS_FILE" 2>/dev/null || echo 0)
+   ROSTER_OK=$(jq -r 'if (.ok == true) and (has("error") | not) and (((.sessions // null) | type) == "array") then "yes" else "no" end' "$SESSIONS_FILE" 2>/dev/null || echo no)
+   SESSION_BEAD_COUNT=$(jq -r 'if type == "array" then length else 0 end' "$SESSION_BEADS_FILE" 2>/dev/null || echo 0)
+   MAP_COUNT=$(printf '%s' "$LIVENESS_MAP" | jq -r 'length' 2>/dev/null || echo 0)
    rm -f "$SESSIONS_FILE" "$SESSION_BEADS_FILE"
+   ```
+
+   **Roster gate — a failed or empty roster is NEVER a basis for orphaning.**
+   `gc session list` can FAIL outright: it exits non-zero and prints
+   `{"ok":false,"error":{...}}` with NO `.sessions` key (seen live under a beads
+   schema skew). That payload yields `SESSION_COUNT=0` AND `MAP_COUNT=0`, so a
+   fail-safe gated on `SESSION_COUNT -gt 0` does NOT fire — every assignee then
+   resolves to `absent` and recovery deletes worktrees for LIVE agents (gp-e03).
+   Check the exit status AND the envelope, and abort unless the roster is
+   non-empty. Note `.ok // "yes"` cannot be used to test the envelope: jq treats
+   `false` as empty, so a literal `"ok":false` would pass. A zero roster is
+   always a failure, never a legitimately idle town — the witness running this
+   step is itself a session:
+   ```bash
+   if [ "${SESSION_LIST_RC:-1}" -ne 0 ] || [ "$ROSTER_OK" != "yes" ] || [ "${SESSION_COUNT:-0}" -eq 0 ]; then
+     echo "FAIL-SAFE: session roster unusable (rc=${SESSION_LIST_RC:-?} ok=$ROSTER_OK sessions=${SESSION_COUNT:-0}) — skipping orphan recovery (treat all assignees as live)."
+     gc mail send mayor/ -s "WITNESS: orphan-recovery disabled — session roster unusable" -m "gc session list --state=all --json exited rc=${SESSION_LIST_RC:-?} with envelope-ok=$ROSTER_OK and ${SESSION_COUNT:-0} sessions. Orphans cannot be classified without a live roster (gp-e03), so orphan recovery is skipped this cycle. Check for a beads schema skew (BD_IGNORE_SCHEMA_SKEW) and gc session list health."
+     # Skip the rest of this step; proceed to check-refinery.
+   fi
    ```
 
    **Backstop check — warn, do NOT abort.** `SESSION_BEAD_COUNT` of 0 while
@@ -248,15 +271,20 @@ a NEW session with a different ID — the old one never comes back.
    fi
    ```
 
-   **Fail safe — never orphan on an empty map.** If the map is empty while
-   sessions exist, the schema has drifted again (the exact failure in
-   gc-3tn8g). An empty map resolves every assignee to `absent` and would
-   false-orphan live agents. ABORT recovery this cycle — do NOT classify any
-   bead as orphaned — escalate, then continue to `check-refinery`:
+   **Fail safe — never orphan on an empty map.** Past the roster gate the
+   roster is known good, so an empty map means the jq recipe itself broke — the
+   schema drifted again (the exact failure in gc-3tn8g). An empty map resolves
+   every assignee to `absent` and would false-orphan live agents. Neither
+   condition is gated on `SESSION_COUNT`: a count that cannot be trusted must
+   not be able to suppress the guard (gp-e03). The echo's `FAIL-SAFE: empty
+   liveness map` prefix is a contract fragment pinned by
+   `scripts/gascity_pack_inference_gate.py`; keep it verbatim when editing this
+   message. ABORT recovery this cycle — do NOT classify any bead as orphaned —
+   escalate, then continue to `check-refinery`:
    ```bash
-   if [ "${MAP_COUNT:-0}" -eq 0 ] && [ "${SESSION_COUNT:-0}" -gt 0 ]; then
-     echo "FAIL-SAFE: empty liveness map with $SESSION_COUNT live sessions — skipping orphan recovery (treat all assignees as live)."
-     gc mail send mayor/ -s "WITNESS: orphan-recovery disabled — empty liveness map" -m "Built an empty assignee->state map from $SESSION_COUNT live sessions. gc session list --json schema likely drifted again (gc-3tn8g); skipping orphan recovery this cycle to avoid false-orphaning live agents. Re-check the recover-orphaned-beads liveness recipe."
+   if [ "${MAP_BUILD_RC:-1}" -ne 0 ] || [ "${MAP_COUNT:-0}" -eq 0 ]; then
+     echo "FAIL-SAFE: empty liveness map or failed build (rc=${MAP_BUILD_RC:-?} entries=${MAP_COUNT:-0}) with $SESSION_COUNT live sessions — skipping orphan recovery (treat all assignees as live)."
+     gc mail send mayor/ -s "WITNESS: orphan-recovery disabled — empty liveness map" -m "Built an unusable assignee->state map from $SESSION_COUNT live sessions (jq rc=${MAP_BUILD_RC:-?}, entries=${MAP_COUNT:-0}). gc session list --json schema likely drifted again (gc-3tn8g); skipping orphan recovery this cycle to avoid false-orphaning live agents. Re-check the recover-orphaned-beads liveness recipe."
      # Skip the rest of this step; proceed to check-refinery.
    fi
    ```
