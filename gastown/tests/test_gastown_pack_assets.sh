@@ -355,10 +355,13 @@ test_witness_handoff_recovery_is_guarded_and_fail_closed() {
     # it dead code for every bead 3b has already returned to pool. A sequence
     # signature pins order, count, and cardinality together, and pins the
     # precondition (Step 3's on-main close) rather than 3a alone.
+    # Leading whitespace is tolerated because the close now sits inside the
+    # ON_MAIN gate; the line is still pinned whole, so this admits indentation
+    # and nothing else.
     signature=$(awk '
-        /^gc bd close <bead> --force$/ { print "step3-close" }
-        /^\*\*Step 3a:/               { print "step3a" }
-        /^\*\*Step 3b:/               { print "step3b" }
+        /^[[:space:]]*gc bd close <bead> --force$/ { print "step3-close" }
+        /^\*\*Step 3a:/                           { print "step3a" }
+        /^\*\*Step 3b:/                           { print "step3b" }
     ' "$witness" | tr '\n' ' ')
     [[ "$signature" == "step3-close step3a step3b " ]] ||
         fail "witness recovery must run Step 3's on-main close, then Step 3a, then Step 3b (got: $signature)"

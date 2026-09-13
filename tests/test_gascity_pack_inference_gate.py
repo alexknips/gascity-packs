@@ -1481,6 +1481,70 @@ def test_gastown_build_workflow_contract_covers_orchestration_roles() -> None:
     assert "gc bd dep add" in contracts["mol-idea-to-plan"]
 
 
+# Guards in the witness's Step 3 "did this branch land?" decision, which chooses
+# between a terminal force-close and a re-dispatch. Each must be pinned in the
+# gate contract AND occur exactly once in the formula.
+WITNESS_ON_MAIN_GUARD_PINS = (
+    # Refresh the refs first: a rig checkout lags the refinery (gp-2xk).
+    'if ! git fetch -q origin main "$BRANCH"; then',
+    # Content test: -z and the quoted array are jointly load-bearing.
+    'done < <(git diff --name-only -z "$MERGE_BASE" "origin/$BRANCH")',
+    'elif git diff --quiet "origin/main" "origin/$BRANCH" -- "${CHANGED[@]}"; then',
+    # The force-close runs only on the verdict.
+    'if [ "$ON_MAIN" = "true" ]; then',
+)
+
+
+def test_gastown_witness_patrol_pins_on_main_guards() -> None:
+    """Every guard on the witness's force-close path must stay pinned.
+
+    The formula is prose, so a guard can be removed by an edit that still reads
+    as a sensible recipe; without a pin per guard the gate stays green while
+    the recipe goes back to closing unmerged work or re-dispatching merged
+    work. Asserting the fragments here means deleting a pin fails as loudly as
+    deleting the guard it protects.
+    """
+    witness = gascity_pack_inference_gate.GASTOWN_BUILD_WORKFLOW_CONTRACTS["mol-witness-patrol"]
+
+    for fragment in WITNESS_ON_MAIN_GUARD_PINS:
+        assert fragment in witness, f"unpinned witness on-main guard: {fragment!r}"
+
+
+def test_gastown_witness_patrol_guard_pins_are_present_in_the_formula() -> None:
+    """The pins must actually match the shipped formula.
+
+    A pin that matches nothing is dead — it can never fail, so it protects
+    nothing. A guard pin that matches more than once can also be satisfied by
+    narration left behind after the guard itself is deleted, so those are held
+    to exactly one occurrence. Both failure modes leave the gate green, so
+    check the raw formula text the gate actually reads.
+    """
+    spec = gascity_pack_inference_gate.PACK_SPECS["gastown"]
+    formula = spec.source / "formulas" / "mol-witness-patrol.toml"
+    text = formula.read_text(encoding="utf-8")
+
+    for fragment in gascity_pack_inference_gate.GASTOWN_BUILD_WORKFLOW_CONTRACTS["mol-witness-patrol"]:
+        assert fragment in text, f"dead pin, matches nothing in {formula}: {fragment!r}"
+
+    for fragment in WITNESS_ON_MAIN_GUARD_PINS:
+        count = text.count(fragment)
+        assert count == 1, f"{fragment!r} occurs {count} times in {formula}, want exactly 1"
+
+
+def test_gastown_witness_patrol_never_reads_local_main_for_merge_state() -> None:
+    """gp-2xk: the merge check must not consult the checkout's local ``main``.
+
+    A rig root checkout goes stale the moment the refinery merges from another
+    worktree, and grepping subject lines for a branch name is unsound in both
+    directions: merged work reads as unlanded and is re-dispatched, and a
+    subject that merely names the branch force-closes unlanded work.
+    """
+    spec = gascity_pack_inference_gate.PACK_SPECS["gastown"]
+    text = (spec.source / "formulas" / "mol-witness-patrol.toml").read_text(encoding="utf-8")
+
+    assert "git log main" not in text
+
+
 def test_build_basic_work_item_targets_code_and_pytest() -> None:
     text = gascity_pack_inference_gate.build_basic_work_item()
 

@@ -384,21 +384,80 @@ starts fresh.
 **Step 3: Verify work on main before resetting.**
 
 Before resetting the bead to pool, check if the branch was already merged
-to main (polecat finished, pushed, but crashed before closing the bead):
+to main (polecat finished, pushed, but crashed before closing the bead).
+
+**Ancestry alone is not enough.** `git merge-base --is-ancestor` only holds
+when the branch's own commit objects are literally reachable from main —
+true for a plain fast-forward or a real merge commit. It false-negatives
+whenever the refinery lands the branch by *recreating* its commits
+(rebase-then-fast-forward onto a main that has moved since the branch was
+cut, or a squash) — main then carries a new commit with a different SHA
+that contains exactly the branch's changes, and ancestry can never see
+that. This is the normal case, not an edge case: any queue with 2+ beads
+produces it as soon as a second bead lands after the first was rebased.
+A false negative here re-dispatches already-merged work.
+
 ```bash
-git log main --oneline | grep -q "$BRANCH"
-# Or check if branch commits are reachable from main:
-git merge-base --is-ancestor origin/$BRANCH origin/main
+# Every check below reads *local* remote-tracking refs, while Step 2's
+# existence checks used live `ls-remote` — two freshness sources in one flow.
+# Refresh first. A failed fetch must not be read as "nothing changed": fall
+# back to not-merged, which re-dispatches (wasteful) rather than closing
+# (terminal).
+if ! git fetch -q origin main "$BRANCH"; then
+  ON_MAIN=false
+# Cheap first pass — catches the plain fast-forward/merge-commit case:
+elif git merge-base --is-ancestor origin/$BRANCH origin/main; then
+  ON_MAIN=true
+else
+  # Rebase/squash recreates commits, so a "not an ancestor" result does
+  # NOT mean "not merged" -- fall back to a content test, scoped to the
+  # branch's own changed files. Bound, stated honestly: this holds while main
+  # has not itself touched those files since the landing, and while the refs
+  # above are fresh. Outside that bound it answers not-merged and the bead is
+  # re-dispatched -- the pre-PR direction, wasteful but never destructive.
+  MERGE_BASE=$(git merge-base origin/$BRANCH origin/main 2>/dev/null || true)
+  if [ -z "$MERGE_BASE" ]; then
+    ON_MAIN=false   # no shared history found; treat conservatively as not-yet-merged
+  else
+    # Collect NUL-separated into a quoted array. Both halves are load-bearing:
+    # an unquoted `-- $CHANGED_FILES` word-splits, so a path containing
+    # whitespace becomes pathspecs matching nothing -- and `git diff --quiet`
+    # over pathspecs that match nothing exits 0, i.e. an UNMERGED branch reads
+    # as merged and gets force-closed with its worktree deleted. `-z` is needed
+    # as well as the quoting: without it `--name-only` C-quotes a path
+    # containing a newline, and re-reading that quoted form yields a pathspec
+    # that matches nothing in exactly the same way.
+    # `while read -d ''` rather than `mapfile -d ''`: mapfile is a bash-4
+    # builtin, and gastown/tests/test_witness_heartbeat_check.sh bans bash-4
+    # constructs outright because the fleet includes macOS on bash 3.2.
+    CHANGED=(); CHANGED_COUNT=0
+    while IFS= read -r -d '' f; do
+      CHANGED[$CHANGED_COUNT]="$f"; CHANGED_COUNT=$((CHANGED_COUNT + 1))
+    done < <(git diff --name-only -z "$MERGE_BASE" "origin/$BRANCH")
+    if [ "$CHANGED_COUNT" -eq 0 ]; then
+      ON_MAIN=false   # branch introduced nothing beyond the merge-base; nothing to confirm
+    elif git diff --quiet "origin/main" "origin/$BRANCH" -- "${CHANGED[@]}"; then
+      ON_MAIN=true    # main's current content for exactly these files matches the branch
+    else
+      ON_MAIN=false
+    fi
+  fi
+fi
 ```
 
-If the work is already on main:
+If the work is already on main (`ON_MAIN=true`):
 - **Close the bead** (work is done, don't re-dispatch). Use `--force`: the bead
   is still assigned to the crashed polecat, so this is a cross-actor close and
-  bd's close-authority guard (gastownhall/beads#3734) would otherwise refuse it:
+  bd's close-authority guard (gastownhall/beads#3734) would otherwise refuse it.
+  `--force` also makes the close terminal — the next patrol cycle cannot undo
+  it — so it runs only on the `ON_MAIN` verdict above, which every arm that
+  cannot prove the landing leaves `false`:
 ```bash
-gc bd close <bead> --force
-gc mail send mayor/ -s "ORPHAN_CLOSED: <bead> already merged" \
-  -m "Branch $BRANCH already on main. Closed instead of resetting."
+if [ "$ON_MAIN" = "true" ]; then
+  gc bd close <bead> --force
+  gc mail send mayor/ -s "ORPHAN_CLOSED: <bead> already merged" \
+    -m "Branch $BRANCH already on main. Closed instead of resetting."
+fi
 ```
 - Clean up worktree and skip to Step 4.
 

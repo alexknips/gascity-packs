@@ -145,6 +145,24 @@ GASTOWN_BUILD_WORKFLOW_CONTRACTS = {
         "gc session nudge <rig>/{{binding_prefix}}refinery",
         "--labels=warrant",
         "\"gc.routed_to\":\"{{binding_prefix}}dog\"",
+        # recover-orphaned-beads Step 3 decides between force-closing a bead
+        # (terminal) and re-dispatching it. Every guard in that decision is
+        # pinned below, because the formula is prose and a guard can be dropped
+        # in an edit that still reads as a sensible recipe. Companion executed
+        # coverage lives in gastown/tests/test_mol_witness_patrol_orphan_recovery.sh,
+        # which lifts the Step 3 decision block out of this file and runs it.
+        #
+        # Refresh before reading: a rig checkout's refs lag the refinery, and a
+        # stale read reports merged work as unlanded (gp-2xk).
+        'if ! git fetch -q origin main "$BRANCH"; then',
+        # The rebase/squash content test. `-z` plus the quoted array are jointly
+        # load-bearing: drop either and a path with whitespace or a newline
+        # becomes a pathspec matching nothing, `git diff --quiet` exits 0, and an
+        # unmerged branch reads as merged and is force-closed.
+        'done < <(git diff --name-only -z "$MERGE_BASE" "origin/$BRANCH")',
+        'elif git diff --quiet "origin/main" "origin/$BRANCH" -- "${CHANGED[@]}"; then',
+        # The force-close runs only on the verdict.
+        'if [ "$ON_MAIN" = "true" ]; then',
     ),
     "mol-deacon-patrol": (
         "Work-layer health",
