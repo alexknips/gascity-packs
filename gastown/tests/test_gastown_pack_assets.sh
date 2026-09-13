@@ -566,13 +566,76 @@ test_refinery_wisp_queries_pin_include_infra() {
     # -ge for the same reason as the guards above: the flagged/total assertion
     # owns the contract, so the count is a floor that catches a deleted query
     # site rather than a cardinality pin a legitimate new site would break.
-    # 9 at this commit — 2 prompt, 6 formula burn sites, plus the patrol-summary
-    # prose pointer that reads closed predecessor wisps and needs the flag for
-    # the same reason.
-    [[ "$total" -ge 8 ]] ||
-        fail "expected at least 8 refinery --type=molecule wisp queries (9 at this commit: 2 prompt + 7 formula), found $total"
+    # 19 at this commit — 8 burn sites (2 prompt, 6 formula) each carrying a
+    # CURRENT_WISP fallback and a queued-successor reuse lookup, the 2 Startup
+    # reconcile queries, plus the patrol-summary prose pointer that reads closed
+    # predecessor wisps and needs the flag for the same reason.
+    [[ "$total" -ge 18 ]] ||
+        fail "expected at least 18 refinery --type=molecule wisp queries (19 at this commit: 6 prompt + 13 formula), found $total"
     [[ "$flagged" -eq "$total" ]] ||
         fail "refinery --type=molecule wisp queries must pass --include-infra ($flagged/$total do)"
+}
+
+test_refinery_patrol_reuses_queued_wisp() {
+    local prompt formula pours guarded reused excluded startup
+
+    prompt="$GASTOWN/agents/refinery/prompt.template.md"
+    formula="$GASTOWN/formulas/mol-refinery-patrol.toml"
+
+    # The --include-infra guard above makes the wisp queries see wisps; this one
+    # pins what the refinery does with the answer (gp-6lu). Every pour site used
+    # to pour unconditionally, so a successor queued by a cycle that never
+    # burned (a failed burn, a restart between pour and burn) was never adopted
+    # and each later cycle stacked another on top — the gascity refinery held
+    # two queued open wisps beside two in_progress ones. Pin reuse on every pour
+    # site: a pour line without the reuse lookup is the regression.
+    pours=$(cat "$prompt" "$formula" |
+        grep -c -F 'NEXT=$(gc bd mol wisp mol-refinery-patrol' || true)
+    guarded=$(cat "$prompt" "$formula" |
+        grep -c -F '[ -n "$NEXT" ] || NEXT=$(gc bd mol wisp mol-refinery-patrol' || true)
+    reused=$(cat "$prompt" "$formula" |
+        grep -c -F 'NEXT=$(gc bd list --assignee="$GC_AGENT" --status=open --type=molecule --include-infra' || true)
+    # A lookup that can return the current wisp picks the very wisp the site
+    # burns next as its successor, leaving no next wisp at all. The exclusion
+    # goes through jq's env rather than a flag: gc lint reads every flag on a
+    # gc bd list line as a bd flag, pipes included.
+    excluded=$(cat "$prompt" "$formula" |
+        grep -c -F 'CURRENT_WISP="$CURRENT_WISP" jq -r '"'"'[.[] | select(.id != env.CURRENT_WISP)]' || true)
+
+    # 8 at this commit: 2 prompt lifecycle sites + 6 formula burn sites.
+    [[ "$pours" -ge 8 ]] ||
+        fail "expected at least 8 refinery next-wisp pour sites (8 at this commit: 2 prompt + 6 formula), found $pours"
+    [[ "$guarded" -eq "$pours" ]] ||
+        fail "every refinery next-wisp pour must run only when no queued wisp was reused ($guarded/$pours do)"
+    [[ "$reused" -eq "$pours" ]] ||
+        fail "every refinery next-wisp pour must first look up a queued open wisp ($reused/$pours do)"
+    [[ "$excluded" -eq "$pours" ]] ||
+        fail "every refinery queued-wisp lookup must exclude the current wisp ($excluded/$pours do)"
+
+    # Startup is where the duplicates actually came from. It used to print the
+    # gc-rendered in-progress query and then pour regardless of the answer; that
+    # query is in_progress-only and keyed on the session identities, so a wisp
+    # a prior session poured and assigned but never started stayed invisible and
+    # every restart poured another (gp-wisp-1eu / gp-wisp-uj8). The reconcile
+    # must see both statuses, pour only when it found none, and leave the kept
+    # wisp in_progress so the CURRENT_WISP fallbacks can resolve it.
+    startup=$(sed -n '/^## Startup$/,/^## Sequential Rebase Protocol$/p' "$prompt")
+    [[ -n "$startup" ]] ||
+        fail "could not locate the refinery prompt Startup section"
+    [[ "$startup" != *'AssignedInProgressQuery'* ]] ||
+        fail "refinery Startup must not decide on the in_progress-only gc-rendered query"
+    [[ "$startup" == *'--status=in_progress --type=molecule --include-infra'* ]] ||
+        fail "refinery Startup reconcile must query in_progress patrol wisps with --include-infra"
+    [[ "$startup" == *'--status=open --type=molecule --include-infra'* ]] ||
+        fail "refinery Startup reconcile must query open patrol wisps with --include-infra"
+    [[ "$startup" == *'gc bd mol burn "$extra" --force'* ]] ||
+        fail "refinery Startup reconcile must burn surplus patrol wisps"
+    [[ "$startup" == *'if [ -z "$WISP" ]; then'* ]] ||
+        fail "refinery Startup must pour only when the reconcile found no wisp"
+    ! printf '%s\n' "$startup" | grep -q '^WISP=$(gc bd mol wisp' ||
+        fail "refinery Startup must not pour a patrol wisp unconditionally"
+    [[ "$startup" == *'gc bd update "$WISP" --assignee="$GC_AGENT" --status=in_progress'* ]] ||
+        fail "refinery Startup must assign the kept wisp to \$GC_AGENT and mark it in_progress"
 }
 
 test_deacon_wisp_queries_pin_include_infra() {
@@ -626,7 +689,7 @@ test_pack_wisp_queries_pin_include_infra() {
     # Floor guards the sweep itself: a broken find or a renamed asset layout
     # would otherwise report a clean pack by scanning nothing.
     [[ "$total" -ge 20 ]] ||
-        fail "expected at least 20 pack-wide --type=molecule wisp queries (22 at this commit), found $total"
+        fail "expected at least 20 pack-wide --type=molecule wisp queries (32 at this commit), found $total"
     [[ -z "$unflagged" ]] ||
         fail "every gc bd list --type=molecule wisp query must pass --include-infra; bare sites:
 $unflagged"
@@ -721,6 +784,7 @@ test_boot_wisp_queries_pin_include_infra
 test_boot_patrol_burn_resolves_current_wisp
 test_boot_deacon_observation_query_sees_wisps_tier
 test_refinery_wisp_queries_pin_include_infra
+test_refinery_patrol_reuses_queued_wisp
 test_deacon_wisp_queries_pin_include_infra
 test_pack_wisp_queries_pin_include_infra
 test_refinery_direct_merge_is_worktree_safe_and_fail_closed

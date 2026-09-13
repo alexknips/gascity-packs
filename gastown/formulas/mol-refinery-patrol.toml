@@ -126,7 +126,10 @@ CURRENT_WISP=${GC_BEAD_ID:-}
 if [ -z "$CURRENT_WISP" ]; then
   CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --include-infra --limit=1 --json | jq -r '.[0].id // empty')
 fi
-NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
+# Reuse a successor already queued for you (poured by a cycle that never
+# burned) instead of pouring a duplicate; pour only when none is queued.
+NEXT=$(gc bd list --assignee="$GC_AGENT" --status=open --type=molecule --include-infra --limit=0 --json | CURRENT_WISP="$CURRENT_WISP" jq -r '[.[] | select(.id != env.CURRENT_WISP)][0].id // empty')
+[ -n "$NEXT" ] || NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
 if [ -z "$NEXT" ]; then
   echo "Could not pour next refinery wisp; not requesting restart."
   gc runtime drain-ack
@@ -276,7 +279,10 @@ Target: $TARGET"
   if [ -z "$CURRENT_WISP" ]; then
     CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --include-infra --limit=1 --json | jq -r '.[0].id // empty')
   fi
-  NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
+  # Reuse a successor already queued for you (poured by a cycle that never
+  # burned) instead of pouring a duplicate; pour only when none is queued.
+  NEXT=$(gc bd list --assignee="$GC_AGENT" --status=open --type=molecule --include-infra --limit=0 --json | CURRENT_WISP="$CURRENT_WISP" jq -r '[.[] | select(.id != env.CURRENT_WISP)][0].id // empty')
+  [ -n "$NEXT" ] || NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
   if [ -z "$NEXT" ]; then
     echo "Could not pour next refinery wisp; not burning."
     gc runtime drain-ack
@@ -332,7 +338,10 @@ CURRENT_WISP=${GC_BEAD_ID:-}
 if [ -z "$CURRENT_WISP" ]; then
   CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --include-infra --limit=1 --json | jq -r '.[0].id // empty')
 fi
-NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
+# Reuse a successor already queued for you (poured by a cycle that never
+# burned) instead of pouring a duplicate; pour only when none is queued.
+NEXT=$(gc bd list --assignee="$GC_AGENT" --status=open --type=molecule --include-infra --limit=0 --json | CURRENT_WISP="$CURRENT_WISP" jq -r '[.[] | select(.id != env.CURRENT_WISP)][0].id // empty')
+[ -n "$NEXT" ] || NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
 if [ -z "$NEXT" ]; then
   echo "Could not pour next refinery wisp; not burning."
   gc runtime drain-ack
@@ -438,7 +447,10 @@ TARGET=$(gc bd show $WORK --json | jq -r '.[0].metadata.target // "{{target_bran
      if [ -z "$CURRENT_WISP" ]; then
        CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --include-infra --limit=1 --json | jq -r '.[0].id // empty')
      fi
-     NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
+     # Reuse a successor already queued for you (poured by a cycle that never
+     # burned) instead of pouring a duplicate; pour only when none is queued.
+     NEXT=$(gc bd list --assignee="$GC_AGENT" --status=open --type=molecule --include-infra --limit=0 --json | CURRENT_WISP="$CURRENT_WISP" jq -r '[.[] | select(.id != env.CURRENT_WISP)][0].id // empty')
+     [ -n "$NEXT" ] || NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
      if [ -z "$NEXT" ]; then
        echo "Could not pour next refinery wisp; not burning."
        gc runtime drain-ack
@@ -538,7 +550,10 @@ Target: $TARGET"
     gc runtime drain-ack
     exit 1
   fi
-  NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
+  # Reuse a successor already queued for you (poured by a cycle that never
+  # burned) instead of pouring a duplicate; pour only when none is queued.
+  NEXT=$(gc bd list --assignee="$GC_AGENT" --status=open --type=molecule --include-infra --limit=0 --json | CURRENT_WISP="$CURRENT_WISP" jq -r '[.[] | select(.id != env.CURRENT_WISP)][0].id // empty')
+  [ -n "$NEXT" ] || NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
   if [ -z "$NEXT" ]; then
     echo "Could not pour next refinery wisp; not burning."
     gc runtime drain-ack
@@ -1241,7 +1256,10 @@ CURRENT_WISP=${GC_BEAD_ID:-}
 if [ -z "$CURRENT_WISP" ]; then
   CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --include-infra --limit=1 --json | jq -r '.[0].id // empty')
 fi
-NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
+# Reuse a successor already queued for you (poured by a cycle that never
+# burned) instead of pouring a duplicate; pour only when none is queued.
+NEXT=$(gc bd list --assignee="$GC_AGENT" --status=open --type=molecule --include-infra --limit=0 --json | CURRENT_WISP="$CURRENT_WISP" jq -r '[.[] | select(.id != env.CURRENT_WISP)][0].id // empty')
+[ -n "$NEXT" ] || NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
 if [ -z "$NEXT" ]; then
   echo "Could not pour next refinery wisp; not burning."
   gc runtime drain-ack

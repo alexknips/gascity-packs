@@ -75,7 +75,10 @@ CURRENT_WISP=${GC_BEAD_ID:-}
 if [ -z "$CURRENT_WISP" ]; then
   CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --include-infra --limit=1 --json | jq -r '.[0].id // empty')
 fi
-NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{ .DefaultBranch }} --var rig_name={{ .RigName }} --var binding_prefix={{ .BindingPrefix }} --json | jq -r '.new_epic_id // empty')
+# Reuse a successor already queued for you (poured by a cycle that never
+# burned) instead of pouring a duplicate; pour only when none is queued.
+NEXT=$(gc bd list --assignee="$GC_AGENT" --status=open --type=molecule --include-infra --limit=0 --json | CURRENT_WISP="$CURRENT_WISP" jq -r '[.[] | select(.id != env.CURRENT_WISP)][0].id // empty')
+[ -n "$NEXT" ] || NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{ .DefaultBranch }} --var rig_name={{ .RigName }} --var binding_prefix={{ .BindingPrefix }} --json | jq -r '.new_epic_id // empty')
 if [ -z "$NEXT" ]; then
   echo "Could not pour next refinery wisp; not burning."
   exit 1
@@ -121,7 +124,10 @@ CURRENT_WISP=${GC_BEAD_ID:-}
 if [ -z "$CURRENT_WISP" ]; then
   CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --include-infra --limit=1 --json | jq -r '.[0].id // empty')
 fi
-NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{ .DefaultBranch }} --var rig_name={{ .RigName }} --var binding_prefix={{ .BindingPrefix }} --json | jq -r '.new_epic_id // empty')
+# Reuse a successor already queued for you (poured by a cycle that never
+# burned) instead of pouring a duplicate; pour only when none is queued.
+NEXT=$(gc bd list --assignee="$GC_AGENT" --status=open --type=molecule --include-infra --limit=0 --json | CURRENT_WISP="$CURRENT_WISP" jq -r '[.[] | select(.id != env.CURRENT_WISP)][0].id // empty')
+[ -n "$NEXT" ] || NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{ .DefaultBranch }} --var rig_name={{ .RigName }} --var binding_prefix={{ .BindingPrefix }} --json | jq -r '.new_epic_id // empty')
 if [ -z "$NEXT" ]; then
   echo "Could not pour next refinery wisp; not requesting restart."
   exit 1
@@ -178,12 +184,34 @@ for ORPHAN in $ORPHANS; do
   # surfaces beads the inbox missed.
 done
 
-# Step 1: Check for an in-progress patrol wisp
-{{ .AssignedInProgressQuery }}
+# Step 1: Reconcile your patrol wisps to exactly one, keyed on $GC_AGENT.
+# Query BOTH statuses: a wisp a prior session poured and assigned but never
+# started is still open, so an in-progress-only check misses it and every
+# restart pours a duplicate. Wisp roots are molecules (--type=molecule, never
+# --type=wisp, which matches nothing) and ephemeral, so --include-infra is
+# required — gc bd list hides the wisps tier without it. Burning the surplus
+# is safe because the refinery is a singleton (max_active_sessions = 1), and
+# it is the only path that reclaims a stranded in_progress wisp.
+WISP_IDS=$(
+  gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --include-infra --limit=0 --json | jq -r '.[].id'
+  gc bd list --assignee="$GC_AGENT" --status=open --type=molecule --include-infra --limit=0 --json | jq -r '.[].id'
+)
+WISP=$(printf '%s\n' $WISP_IDS | sed -n '1p')           # keep one (prefers in_progress)
+for extra in $(printf '%s\n' $WISP_IDS | sed '1d'); do  # burn stranded or duplicate wisps
+  gc bd mol burn "$extra" --force
+done
 
-# If none found, pour one (root-only — no child step beads) and assign it
-WISP=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{ .DefaultBranch }} --var rig_name={{ .RigName }} --var binding_prefix={{ .BindingPrefix }} --json | jq -r '.new_epic_id')
-gc bd update "$WISP" --assignee="$GC_AGENT"
+# If none found, pour one (root-only — no child step beads)
+if [ -z "$WISP" ]; then
+  WISP=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{ .DefaultBranch }} --var rig_name={{ .RigName }} --var binding_prefix={{ .BindingPrefix }} --json | jq -r '.new_epic_id // empty')
+fi
+# Assign it and mark it in_progress: every CURRENT_WISP fallback filters on
+# in_progress, so a wisp left open is one the burn sites cannot resolve.
+if [ -n "$WISP" ]; then
+  gc bd update "$WISP" --assignee="$GC_AGENT" --status=in_progress
+else
+  echo "Could not pour refinery patrol wisp; ending turn."
+fi
 ```
 
 Then follow the formula. The step descriptions below are your instructions —
